@@ -12,9 +12,11 @@
     "@distube/ytdl-core": "^4.16.12",
     "assemblyai": "^4.22.1",
     "next": "16.1.6",
+    "play-dl": "^1.9.7",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "youtube-transcript": "^1.2.1"
+    "youtube-transcript": "^1.2.1",
+    "youtubei.js": "^16.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
