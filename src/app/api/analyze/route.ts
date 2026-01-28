@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { YoutubeTranscript } from 'youtube-transcript';
+import { AssemblyAI } from 'assemblyai';
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const ASSEMBLYAI_API_KEY = process.env.ASSEMBLYAI_API_KEY;
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,19 +19,39 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid YouTube URL' }, { status: 400 });
     }
 
-    // Fetch transcript
+    // Try to fetch transcript - first with youtube-transcript, then with AssemblyAI
     let transcript: string;
+    let transcriptSource: string = 'captions';
+    
     try {
+      // Try youtube-transcript first (fastest, free)
       const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
       transcript = transcriptItems.map(item => item.text).join(' ');
-    } catch (e) {
-      return NextResponse.json({ 
-        error: 'Could not fetch transcript. Make sure the video has captions available.' 
-      }, { status: 400 });
-    }
-
-    if (!transcript || transcript.trim().length === 0) {
-      return NextResponse.json({ error: 'No transcript available for this video' }, { status: 400 });
+      
+      if (!transcript || transcript.trim().length === 0) {
+        throw new Error('Empty transcript');
+      }
+    } catch (captionError) {
+      console.log('Caption fetch failed, trying AssemblyAI...', captionError);
+      
+      // Fallback to AssemblyAI transcription
+      if (!ASSEMBLYAI_API_KEY) {
+        return NextResponse.json({ 
+          error: 'This video has no captions available. Audio transcription requires an AssemblyAI API key to be configured.',
+          suggestion: 'Try a video with captions enabled, or configure ASSEMBLYAI_API_KEY for audio transcription.'
+        }, { status: 400 });
+      }
+      
+      try {
+        transcript = await transcribeWithAssemblyAI(videoUrl);
+        transcriptSource = 'audio-transcription';
+      } catch (transcribeError) {
+        console.error('AssemblyAI transcription failed:', transcribeError);
+        return NextResponse.json({ 
+          error: 'Could not fetch captions or transcribe audio. The video may be restricted or too long.',
+          details: transcribeError instanceof Error ? transcribeError.message : 'Unknown error'
+        }, { status: 400 });
+      }
     }
 
     // Truncate transcript if too long (keep first ~15000 chars to stay within context limits)
@@ -44,6 +66,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       videoId,
       transcriptLength: transcript.length,
+      transcriptSource,
       analysis
     });
 
@@ -64,6 +87,25 @@ function extractVideoId(url: string): string | null {
     if (match) return match[1];
   }
   return null;
+}
+
+async function transcribeWithAssemblyAI(videoUrl: string): Promise<string> {
+  const client = new AssemblyAI({ apiKey: ASSEMBLYAI_API_KEY! });
+  
+  // AssemblyAI can transcribe directly from YouTube URLs
+  const transcript = await client.transcripts.transcribe({
+    audio_url: videoUrl,
+  });
+  
+  if (transcript.status === 'error') {
+    throw new Error(transcript.error || 'Transcription failed');
+  }
+  
+  if (!transcript.text) {
+    throw new Error('No transcript text returned');
+  }
+  
+  return transcript.text;
 }
 
 async function analyzeWithAI(transcript: string): Promise<string> {

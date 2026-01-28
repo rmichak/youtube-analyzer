@@ -9,6 +9,7 @@ export default function Home() {
   const [result, setResult] = useState<{
     videoId: string;
     transcriptLength: number;
+    transcriptSource?: string;
     analysis: string;
   } | null>(null);
 
@@ -116,6 +117,9 @@ export default function Home() {
               </div>
               <p className="text-purple-300 text-sm">
                 📝 Transcript length: {result.transcriptLength.toLocaleString()} characters
+                {result.transcriptSource === 'audio-transcription' && (
+                  <span className="ml-2 text-yellow-300">(transcribed from audio)</span>
+                )}
               </p>
             </div>
 
