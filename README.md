@@ -25,7 +25,7 @@ AI-powered YouTube video analyzer that extracts transcripts and provides compreh
 - **Language:** TypeScript
 - **Styling:** Tailwind CSS
 - **AI:** Claude 3.5 Sonnet via OpenRouter
-- **Transcript:** youtube-transcript library
+- **Transcript:** youtube-transcript-plus library
 - **Deployment:** Vercel
 
 ## Getting Started
@@ -93,4 +93,4 @@ MIT
 
 ## Author
 
-Built by Randy Michak | [Empowerment AI](https://empowerment-ai.com)
+Built by Randy Michak
