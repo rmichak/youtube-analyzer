@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { YoutubeTranscript } from 'youtube-transcript';
-import { AssemblyAI } from 'assemblyai';
-import ytdl from '@distube/ytdl-core';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { readFile, unlink } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+const execAsync = promisify(exec);
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const ASSEMBLYAI_API_KEY = process.env.ASSEMBLYAI_API_KEY;
 
 export const maxDuration = 300; // 5 minutes for long transcriptions
 
@@ -22,37 +26,37 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid YouTube URL' }, { status: 400 });
     }
 
-    // Try to fetch transcript - first with youtube-transcript, then with AssemblyAI
+    // Try to fetch transcript with multiple fallbacks
     let transcript: string;
     let transcriptSource: string = 'captions';
     
+    // Method 1: Try youtube-transcript npm (fastest)
     try {
-      // Try youtube-transcript first (fastest, free)
+      console.log('Trying youtube-transcript npm...');
       const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
       transcript = transcriptItems.map(item => item.text).join(' ');
       
       if (!transcript || transcript.trim().length === 0) {
         throw new Error('Empty transcript');
       }
-    } catch (captionError) {
-      console.log('Caption fetch failed, trying AssemblyAI...', captionError);
+      console.log('Success with youtube-transcript npm');
+    } catch (npmError) {
+      console.log('youtube-transcript npm failed:', npmError);
       
-      // Fallback to AssemblyAI transcription
-      if (!ASSEMBLYAI_API_KEY) {
-        return NextResponse.json({ 
-          error: 'This video has no captions available. Audio transcription requires an AssemblyAI API key to be configured.',
-          suggestion: 'Try a video with captions enabled, or configure ASSEMBLYAI_API_KEY for audio transcription.'
-        }, { status: 400 });
-      }
-      
+      // Method 2: Try yt-dlp subtitle extraction
       try {
-        transcript = await transcribeWithAssemblyAI(videoId);
-        transcriptSource = 'audio-transcription';
-      } catch (transcribeError) {
-        console.error('AssemblyAI transcription failed:', transcribeError);
+        console.log('Trying yt-dlp subtitle extraction...');
+        transcript = await fetchWithYtDlp(videoId);
+        transcriptSource = 'yt-dlp-captions';
+        console.log('Success with yt-dlp');
+      } catch (ytdlpError) {
+        console.log('yt-dlp failed:', ytdlpError);
+        
+        // All methods failed
         return NextResponse.json({ 
-          error: 'Could not fetch captions or transcribe audio. The video may be restricted or unavailable.',
-          details: transcribeError instanceof Error ? transcribeError.message : 'Unknown error'
+          error: 'Could not fetch captions for this video. Try uploading the audio file instead.',
+          suggestion: 'Use the "Upload Audio" tab - download the audio locally with yt-dlp, then upload it here.',
+          details: ytdlpError instanceof Error ? ytdlpError.message : 'Unknown error'
         }, { status: 400 });
       }
     }
@@ -92,45 +96,70 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
-async function transcribeWithAssemblyAI(videoId: string): Promise<string> {
-  const client = new AssemblyAI({ apiKey: ASSEMBLYAI_API_KEY! });
+async function fetchWithYtDlp(videoId: string): Promise<string> {
+  const tempFile = join(tmpdir(), `yt-${videoId}-${Date.now()}`);
+  const srtFile = `${tempFile}.en.srt`;
   
-  // Get audio URL from YouTube using ytdl-core
-  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  
-  let audioUrl: string;
   try {
-    const info = await ytdl.getInfo(videoId);
-    // Get audio-only format
-    const audioFormat = ytdl.chooseFormat(info.formats, { 
-      quality: 'lowestaudio',
-      filter: 'audioonly' 
-    });
+    // Download subtitles using yt-dlp
+    const command = `yt-dlp --skip-download --write-auto-sub --sub-lang en --sub-format srt -o "${tempFile}" "https://www.youtube.com/watch?v=${videoId}" 2>&1`;
     
-    if (!audioFormat || !audioFormat.url) {
-      throw new Error('No audio format available');
+    await execAsync(command, { timeout: 60000 });
+    
+    // Read the SRT file
+    let srtContent: string;
+    try {
+      srtContent = await readFile(srtFile, 'utf-8');
+    } catch {
+      // Try without language suffix
+      const altFile = `${tempFile}.srt`;
+      srtContent = await readFile(altFile, 'utf-8');
     }
     
-    audioUrl = audioFormat.url;
-  } catch (ytdlError) {
-    console.error('ytdl-core error:', ytdlError);
-    throw new Error('Could not extract audio from video. The video may be restricted or age-gated.');
+    // Parse SRT to plain text
+    const transcript = parseSrtToText(srtContent);
+    
+    if (!transcript || transcript.trim().length === 0) {
+      throw new Error('Empty transcript from yt-dlp');
+    }
+    
+    return transcript;
+  } finally {
+    // Cleanup temp files
+    try {
+      await unlink(srtFile);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
+
+function parseSrtToText(srt: string): string {
+  // Remove SRT formatting: timestamps, sequence numbers, and blank lines
+  const lines = srt.split('\n');
+  const textLines: string[] = [];
+  
+  for (const line of lines) {
+    const trimmed = line.trim();
+    
+    // Skip empty lines
+    if (!trimmed) continue;
+    
+    // Skip sequence numbers (just digits)
+    if (/^\d+$/.test(trimmed)) continue;
+    
+    // Skip timestamp lines (00:00:00,000 --> 00:00:00,000)
+    if (/^\d{2}:\d{2}:\d{2}[,\.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,\.]\d{3}$/.test(trimmed)) continue;
+    
+    // This is actual text content
+    textLines.push(trimmed);
   }
   
-  // Send to AssemblyAI for transcription
-  const transcript = await client.transcripts.transcribe({
-    audio_url: audioUrl,
-  });
-  
-  if (transcript.status === 'error') {
-    throw new Error(transcript.error || 'Transcription failed');
-  }
-  
-  if (!transcript.text) {
-    throw new Error('No transcript text returned');
-  }
-  
-  return transcript.text;
+  // Join and clean up
+  return textLines.join(' ')
+    .replace(/\s+/g, ' ')  // Normalize whitespace
+    .replace(/\[.*?\]/g, '') // Remove [Music], [Applause], etc.
+    .trim();
 }
 
 async function analyzeWithAI(transcript: string): Promise<string> {
