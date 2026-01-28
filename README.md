@@ -24,7 +24,7 @@ AI-powered YouTube video analyzer that extracts transcripts and provides compreh
 - **Framework:** Next.js 16 (App Router)
 - **Language:** TypeScript
 - **Styling:** Tailwind CSS
-- **AI:** Claude 3.5 Sonnet via OpenRouter
+- **AI:** OpenRouter (configurable model — defaults to Claude 3.5 Sonnet)
 - **Transcript:** youtube-transcript-plus library
 - **Deployment:** Vercel
 
@@ -53,10 +53,13 @@ npm install
 cp .env.example .env.local
 ```
 
-4. Add your OpenRouter API key to `.env.local`:
+4. Add your environment variables to `.env.local`:
 ```
 OPENROUTER_API_KEY=your_api_key_here
+AI_MODEL=anthropic/claude-3.5-sonnet
 ```
+
+> **Note:** `AI_MODEL` is optional — defaults to `anthropic/claude-3.5-sonnet`. You can use any model available on [OpenRouter](https://openrouter.ai/models), e.g. `openai/gpt-4o`, `google/gemini-2.0-flash`, `anthropic/claude-sonnet-4`, etc.
 
 5. Run the development server:
 ```bash
@@ -71,7 +74,7 @@ npm run dev
 
 1. Push to GitHub
 2. Import project in Vercel
-3. Add `OPENROUTER_API_KEY` environment variable
+3. Add environment variables: `OPENROUTER_API_KEY` (required), `AI_MODEL` (optional)
 4. Deploy!
 
 ## Usage

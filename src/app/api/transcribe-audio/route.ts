@@ -3,6 +3,7 @@ import { AssemblyAI } from 'assemblyai';
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const ASSEMBLYAI_API_KEY = process.env.ASSEMBLYAI_API_KEY;
+const AI_MODEL = process.env.AI_MODEL || 'anthropic/claude-3.5-sonnet';
 
 export const maxDuration = 300; // 5 minutes for long transcriptions
 
@@ -102,7 +103,7 @@ async function analyzeWithAI(transcript: string): Promise<string> {
       'X-Title': 'YouTube Video Analyzer'
     },
     body: JSON.stringify({
-      model: 'anthropic/claude-3.5-sonnet',
+      model: AI_MODEL,
       messages: [
         {
           role: 'system',
