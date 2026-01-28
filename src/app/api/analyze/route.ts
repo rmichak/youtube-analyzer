@@ -1,16 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { YoutubeTranscript } from 'youtube-transcript';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import { readFile, unlink } from 'fs/promises';
-import { tmpdir } from 'os';
-import { join } from 'path';
-
-const execAsync = promisify(exec);
+import { YoutubeTranscript } from 'youtube-transcript-plus';
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 
 export const maxDuration = 300; // 5 minutes for long transcriptions
+
+function decodeHtmlEntities(text: string): string {
+  let decoded = text;
+  for (let i = 0; i < 2; i++) {
+    const prev = decoded;
+    decoded = decoded
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&#39;/g, "'")
+      .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
+    if (decoded === prev) break;
+  }
+  return decoded;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -26,39 +37,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid YouTube URL' }, { status: 400 });
     }
 
-    // Try to fetch transcript with multiple fallbacks
+    // Fetch transcript using youtube-transcript-plus
     let transcript: string;
-    let transcriptSource: string = 'captions';
+    const transcriptSource: string = 'captions';
     
-    // Method 1: Try youtube-transcript npm (fastest)
     try {
-      console.log('Trying youtube-transcript npm...');
+      console.log('Fetching transcript for:', videoId);
       const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
-      transcript = transcriptItems.map(item => item.text).join(' ');
       
-      if (!transcript || transcript.trim().length === 0) {
+      transcript = transcriptItems
+        .map(item => decodeHtmlEntities(item.text))
+        .join(' ')
+        .replace(/\[.*?\]/g, '')  // Remove [Music], [Applause], etc.
+        .replace(/♪/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      
+      if (!transcript || transcript.length === 0) {
         throw new Error('Empty transcript');
       }
-      console.log('Success with youtube-transcript npm');
-    } catch (npmError) {
-      console.log('youtube-transcript npm failed:', npmError);
-      
-      // Method 2: Try yt-dlp subtitle extraction
-      try {
-        console.log('Trying yt-dlp subtitle extraction...');
-        transcript = await fetchWithYtDlp(videoId);
-        transcriptSource = 'yt-dlp-captions';
-        console.log('Success with yt-dlp');
-      } catch (ytdlpError) {
-        console.log('yt-dlp failed:', ytdlpError);
-        
-        // All methods failed
-        return NextResponse.json({ 
-          error: 'Could not fetch captions for this video. Try uploading the audio file instead.',
-          suggestion: 'Use the "Upload Audio" tab - download the audio locally with yt-dlp, then upload it here.',
-          details: ytdlpError instanceof Error ? ytdlpError.message : 'Unknown error'
-        }, { status: 400 });
-      }
+      console.log(`Success: ${transcriptItems.length} segments, ${transcript.length} chars`);
+    } catch (fetchError) {
+      console.log('Transcript fetch failed:', fetchError);
+      return NextResponse.json({ 
+        error: 'Could not fetch captions for this video. The video may not have captions available.',
+        details: fetchError instanceof Error ? fetchError.message : 'Unknown error'
+      }, { status: 400 });
     }
 
     // Truncate transcript if too long (keep first ~15000 chars to stay within context limits)
@@ -94,72 +98,6 @@ function extractVideoId(url: string): string | null {
     if (match) return match[1];
   }
   return null;
-}
-
-async function fetchWithYtDlp(videoId: string): Promise<string> {
-  const tempFile = join(tmpdir(), `yt-${videoId}-${Date.now()}`);
-  const srtFile = `${tempFile}.en.srt`;
-  
-  try {
-    // Download subtitles using yt-dlp
-    const command = `yt-dlp --skip-download --write-auto-sub --sub-lang en --sub-format srt -o "${tempFile}" "https://www.youtube.com/watch?v=${videoId}" 2>&1`;
-    
-    await execAsync(command, { timeout: 60000 });
-    
-    // Read the SRT file
-    let srtContent: string;
-    try {
-      srtContent = await readFile(srtFile, 'utf-8');
-    } catch {
-      // Try without language suffix
-      const altFile = `${tempFile}.srt`;
-      srtContent = await readFile(altFile, 'utf-8');
-    }
-    
-    // Parse SRT to plain text
-    const transcript = parseSrtToText(srtContent);
-    
-    if (!transcript || transcript.trim().length === 0) {
-      throw new Error('Empty transcript from yt-dlp');
-    }
-    
-    return transcript;
-  } finally {
-    // Cleanup temp files
-    try {
-      await unlink(srtFile);
-    } catch {
-      // Ignore cleanup errors
-    }
-  }
-}
-
-function parseSrtToText(srt: string): string {
-  // Remove SRT formatting: timestamps, sequence numbers, and blank lines
-  const lines = srt.split('\n');
-  const textLines: string[] = [];
-  
-  for (const line of lines) {
-    const trimmed = line.trim();
-    
-    // Skip empty lines
-    if (!trimmed) continue;
-    
-    // Skip sequence numbers (just digits)
-    if (/^\d+$/.test(trimmed)) continue;
-    
-    // Skip timestamp lines (00:00:00,000 --> 00:00:00,000)
-    if (/^\d{2}:\d{2}:\d{2}[,\.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,\.]\d{3}$/.test(trimmed)) continue;
-    
-    // This is actual text content
-    textLines.push(trimmed);
-  }
-  
-  // Join and clean up
-  return textLines.join(' ')
-    .replace(/\s+/g, ' ')  // Normalize whitespace
-    .replace(/\[.*?\]/g, '') // Remove [Music], [Applause], etc.
-    .trim();
 }
 
 async function analyzeWithAI(transcript: string): Promise<string> {
