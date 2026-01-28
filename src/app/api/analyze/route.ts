@@ -37,18 +37,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid YouTube URL' }, { status: 400 });
     }
 
-    // Fetch transcript using youtube-transcript-plus
+    // Fetch transcript with fallback chain
     let transcript: string;
-    const transcriptSource: string = 'captions';
+    let transcriptSource: string = 'captions';
     
+    // Method 1: youtube-transcript-plus (fast, free, works for official captions)
     try {
-      console.log('Fetching transcript for:', videoId);
+      console.log('Method 1: youtube-transcript-plus for', videoId);
       const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
       
       transcript = transcriptItems
         .map(item => decodeHtmlEntities(item.text))
         .join(' ')
-        .replace(/\[.*?\]/g, '')  // Remove [Music], [Applause], etc.
+        .replace(/\[.*?\]/g, '')
         .replace(/♪/g, '')
         .replace(/\s+/g, ' ')
         .trim();
@@ -56,13 +57,37 @@ export async function POST(request: NextRequest) {
       if (!transcript || transcript.length === 0) {
         throw new Error('Empty transcript');
       }
-      console.log(`Success: ${transcriptItems.length} segments, ${transcript.length} chars`);
-    } catch (fetchError) {
-      console.log('Transcript fetch failed:', fetchError);
-      return NextResponse.json({ 
-        error: 'Could not fetch captions for this video. The video may not have captions available.',
-        details: fetchError instanceof Error ? fetchError.message : 'Unknown error'
-      }, { status: 400 });
+      console.log(`Success via youtube-transcript-plus: ${transcriptItems.length} segments, ${transcript.length} chars`);
+    } catch (directError) {
+      console.log('Method 1 failed:', directError);
+      
+      // Method 2: n8n webhook with RapidAPI (handles cloud IP blocks)
+      try {
+        console.log('Method 2: n8n webhook fallback for', videoId);
+        const n8nResponse = await fetch('https://rmichak.app.n8n.cloud/webhook/youtube-transcript', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: `https://www.youtube.com/watch?v=${videoId}` }),
+          signal: AbortSignal.timeout(30000),
+        });
+        
+        const n8nData = await n8nResponse.json();
+        
+        if (!n8nData.success || !n8nData.transcript) {
+          throw new Error(n8nData.error || 'n8n webhook returned no transcript');
+        }
+        
+        transcript = n8nData.transcript;
+        transcriptSource = 'n8n-rapidapi';
+        console.log(`Success via n8n fallback: ${transcript.length} chars`);
+      } catch (n8nError) {
+        console.log('Method 2 failed:', n8nError);
+        return NextResponse.json({ 
+          error: 'Could not fetch captions for this video. The video may not have captions available.',
+          suggestion: 'Try uploading the audio file instead using the Upload Audio tab.',
+          details: directError instanceof Error ? directError.message : 'Unknown error'
+        }, { status: 400 });
+      }
     }
 
     // Truncate transcript if too long (keep first ~15000 chars to stay within context limits)
