@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { YoutubeTranscript } from 'youtube-transcript';
 import { AssemblyAI } from 'assemblyai';
+import ytdl from '@distube/ytdl-core';
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const ASSEMBLYAI_API_KEY = process.env.ASSEMBLYAI_API_KEY;
+
+export const maxDuration = 300; // 5 minutes for long transcriptions
 
 export async function POST(request: NextRequest) {
   try {
@@ -43,12 +46,12 @@ export async function POST(request: NextRequest) {
       }
       
       try {
-        transcript = await transcribeWithAssemblyAI(videoUrl);
+        transcript = await transcribeWithAssemblyAI(videoId);
         transcriptSource = 'audio-transcription';
       } catch (transcribeError) {
         console.error('AssemblyAI transcription failed:', transcribeError);
         return NextResponse.json({ 
-          error: 'Could not fetch captions or transcribe audio. The video may be restricted or too long.',
+          error: 'Could not fetch captions or transcribe audio. The video may be restricted or unavailable.',
           details: transcribeError instanceof Error ? transcribeError.message : 'Unknown error'
         }, { status: 400 });
       }
@@ -89,12 +92,34 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
-async function transcribeWithAssemblyAI(videoUrl: string): Promise<string> {
+async function transcribeWithAssemblyAI(videoId: string): Promise<string> {
   const client = new AssemblyAI({ apiKey: ASSEMBLYAI_API_KEY! });
   
-  // AssemblyAI can transcribe directly from YouTube URLs
+  // Get audio URL from YouTube using ytdl-core
+  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  
+  let audioUrl: string;
+  try {
+    const info = await ytdl.getInfo(videoId);
+    // Get audio-only format
+    const audioFormat = ytdl.chooseFormat(info.formats, { 
+      quality: 'lowestaudio',
+      filter: 'audioonly' 
+    });
+    
+    if (!audioFormat || !audioFormat.url) {
+      throw new Error('No audio format available');
+    }
+    
+    audioUrl = audioFormat.url;
+  } catch (ytdlError) {
+    console.error('ytdl-core error:', ytdlError);
+    throw new Error('Could not extract audio from video. The video may be restricted or age-gated.');
+  }
+  
+  // Send to AssemblyAI for transcription
   const transcript = await client.transcripts.transcribe({
-    audio_url: videoUrl,
+    audio_url: audioUrl,
   });
   
   if (transcript.status === 'error') {
