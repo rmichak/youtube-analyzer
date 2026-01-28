@@ -355,10 +355,7 @@ export default function Home() {
 
         {/* Footer */}
         <footer className="mt-12 text-center text-sm" style={{ color: '#64748b' }}>
-          Powered by Claude 3.5 Sonnet via OpenRouter &middot; Built by{' '}
-          <a href="https://empowerment-ai.com" target="_blank" rel="noopener noreferrer" style={{ color: '#00d4ff' }} className="hover:underline">
-            Empowerment AI
-          </a>
+          Powered by Claude 3.5 Sonnet via OpenRouter
         </footer>
       </div>
 
